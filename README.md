@@ -263,16 +263,6 @@ npm run ext:build
 
 ---
 
-## 🤝 Katkıda Bulunma
-
-1. Bu repoyu fork et
-2. Yeni bir branch oluştur: `git checkout -b ozellik/aciklama`
-3. Değişikliklerini yap ve commit et: `git commit -m "feat: açıklama"`
-4. Branch'ini push et: `git push origin ozellik/aciklama`
-5. Pull Request aç
-
----
-
 ## 📄 Lisans
 
 MIT © Testocan
