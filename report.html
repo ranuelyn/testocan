@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Testocan Hata Raporu</title>
+    <style>
+      :root {
+        --bg: #080c14;
+        --surface: #101520;
+        --primary: #f5a623; /* Amber Bee */
+        --text: #ffffff;
+        --secondary-text: #a0a5b0;
+        --border: #1f2736;
+      }
+      body {
+        margin: 0;
+        padding: 0;
+        background-color: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        line-height: 1.6;
+      }
+      .header {
+        background-color: var(--surface);
+        padding: 20px 40px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 15px;
+      }
+      .header img {
+        width: 32px;
+        height: 32px;
+      }
+      .header h1 {
+        margin: 0;
+        font-size: 20px;
+        font-weight: 600;
+        color: var(--primary);
+      }
+      .container {
+        max-width: 1000px;
+        margin: 40px auto;
+        padding: 0 20px;
+        display: flex;
+        gap: 40px;
+      }
+      .report-content {
+        flex: 1;
+        background: var(--surface);
+        padding: 30px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+      }
+      .screenshot-container {
+        width: 350px;
+      }
+      .screenshot-container img {
+        width: 100%;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      }
+      .empty-state {
+        color: var(--secondary-text);
+        font-style: italic;
+      }
+      
+      /* Markdown basic styles */
+      .report-content h1, .report-content h2, .report-content h3 {
+        color: var(--primary);
+        margin-top: 0;
+      }
+      .markdown-body {
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        max-width: 100%;
+        overflow-x: hidden;
+      }
+      .report-content pre {
+        background: rgba(0,0,0,0.3);
+        padding: 15px;
+        border-radius: 6px;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+      }
+      .report-content code {
+        background: rgba(0,0,0,0.3);
+        padding: 2px 6px;
+        border-radius: 4px;
+        color: #ffb86c;
+      }
+      
+      @media (max-width: 768px) {
+        .container { flex-direction: column; }
+        .screenshot-container { width: 100%; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <img src="/logo.png" alt="Testocan Logo" />
+      <h1>Testocan Hata Raporu</h1>
+    </div>
+    <div class="container" id="root">
+      Ekrana yükleniyor...
+    </div>
+    
+    <script type="module" src="/src/report/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,21 @@
+{
+  "name": "testocan-extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI-powered QA testing agent Chrome Extension",
+  "scripts": {
+    "dev": "vite build --watch --mode development",
+    "build": "vite build",
+    "ext:build": "node scripts/build.mjs",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "marked": "^18.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^6.0.0"
+  }
+}
