@@ -200,28 +200,17 @@ Ardından çıkış yap, YUSUFTEST ile giriş yap ve bildirimleri kontrol et.
 
 ## 📸 Ekran Görüntüleri
 
-> **💡 Buraya eklemen gereken görseller:**
-> 
-> | Dosya Adı | İçerik |
-> |---|---|
-> | `docs/screenshot-idle.png` | Uzantı ana ekranı (boş/kayıt öncesi) |
-> | `docs/screenshot-recording.png` | Kayıt sırasındaki ekran |
-> | `docs/screenshot-tasks.png` | Görev listesi ekranı |
-> | `docs/screenshot-knowledge-gaps.png` | Bilgi bankası / gap öğretme ekranı |
-> | `docs/screenshot-report.png` | Üretilen QA raporu sayfası |
->
-> Görselleri aldıktan sonra `docs/` klasörüne koyup aşağıdaki alanları doldurabilirsin:
-
-```markdown
-### Ana Ekran
+### Ana Ekran — Kayıt Öncesi
 ![Ana Ekran](docs/screenshot-idle.png)
 
-### Görev Orkestratörü
-![Görev](docs/screenshot-tasks.png)
+### Görev Orkestratörü & Akış Listesi
+![Görev Ekranı](docs/screenshot-tasks.png)
 
-### QA Raporu
-![Rapor](docs/screenshot-report.png)
-```
+### Bilgi Bankası — Eksik Eylemleri Öğret
+![Bilgi Bankası](docs/screenshot-knowledge-gaps.png)
+
+### AI Tarafından Üretilen QA Raporu
+![QA Raporu](docs/screenshot-report.png)
 
 ---
 
