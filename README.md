@@ -6,8 +6,14 @@
 <p align="center">
   <strong>AI destekli Chrome uzantısı ile web testlerinizi otomatize edin.</strong><br/>
   Kaydet. Oynat. Analiz et. Hataları raporla.
-  ![ezgif-8128b4296b311346](https://github.com/user-attachments/assets/15ed5f0e-dac9-45de-ac3a-f28cea63da92)
 </p>
+
+<div align="center">
+
+![ezgif-8128b4296b311346](https://github.com/user-attachments/assets/15ed5f0e-dac9-45de-ac3a-f28cea63da92)
+
+</div>
+
 <p align="center">
   <img src="https://img.shields.io/badge/manifest-v3-blue?style=flat-square" />
   <img src="https://img.shields.io/badge/react-18-61dafb?style=flat-square&logo=react" />
