@@ -62,6 +62,10 @@ const MSG = Object.freeze({
   GET_TASK_STATUS:      'TESTOCAN::GET_TASK_STATUS',
   ENHANCE_TASK_REPORT:    'TESTOCAN::ENHANCE_TASK_REPORT',
   ANALYZE_KNOWLEDGE_GAPS: 'TESTOCAN::ANALYZE_KNOWLEDGE_GAPS',
+  GET_KNOWLEDGE_TREE:     'TESTOCAN::GET_KNOWLEDGE_TREE',
+  CLEAR_KNOWLEDGE:        'TESTOCAN::CLEAR_KNOWLEDGE',
+  SHOW_FLOATING_WIDGET:   'TESTOCAN::SHOW_FLOATING_WIDGET',
+  OPEN_SIDE_PANEL:        'TESTOCAN::OPEN_SIDE_PANEL',
 });
 
 // ── Per-tab state ────────────────────────────────────────────
@@ -177,6 +181,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
       return true;
 
+    case MSG.OPEN_SIDE_PANEL:
+      // Open the side panel for the current tab
+      const tabToOpen = sender.tab?.id || tabId;
+      if (tabToOpen && chrome.sidePanel && chrome.sidePanel.open) {
+        chrome.sidePanel.open({ tabId: tabToOpen }).catch(err => console.error("SidePanel open err:", err));
+      }
+      sendResponse({ ok: true });
+      return false;
+
     case MSG.DELETE_FLOW:
       handleDeleteFlow(payload, sendResponse);
       return true;
@@ -205,7 +218,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     // ── Tasks ──
     case MSG.SPLIT_TASK:
-      GeminiClient.splitTask(payload.prompt).then(sendResponse);
+      GeminiClient.splitTask(payload.prompt, payload.availableFlows || []).then(sendResponse);
       return true;
 
     case MSG.SYNTHESIZE_TASK_FLOW:
@@ -228,6 +241,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case MSG.ANALYZE_KNOWLEDGE_GAPS:
       GeminiClient.analyzeKnowledgeGaps(payload.taskDesc, payload.taskFlows, payload.primaryFlowEvents).then(sendResponse);
       return true;
+
+    case MSG.GET_KNOWLEDGE_TREE:
+      sendResponse({
+        ok: true,
+        tree: stateGraph.toTree(),
+        stats: stateGraph.stats,
+      });
+      return false;
+
+    case MSG.CLEAR_KNOWLEDGE:
+      stateGraph = new StateGraph();
+      persistGraph();
+      sendResponse({ ok: true });
+      return false;
 
     default:
       return false;
@@ -341,6 +368,35 @@ function handleDomEvent(tabId, payload) {
     const label = payload.locator.innerText?.slice(0, 30) || payload.locator.ariaLabel || 'click';
     // Edge will be created when navigation happens next
     state._pendingAction = { action: `click: ${label}`, url: payload.url };
+
+    // Knowledge Tree: record click interaction on current page
+    stateGraph.addInteraction(
+      payload.url,
+      'click',
+      label,
+      payload.locator
+    );
+  }
+
+  // Knowledge Tree: record input/change interactions
+  if ((payload.action === 'input' || payload.action === 'change') && payload.locator) {
+    const fieldLabel = payload.locator.placeholder || payload.locator.name || payload.locator.ariaLabel || payload.locator.id || payload.locator.tagName || 'field';
+    stateGraph.addInteraction(
+      payload.url,
+      payload.action,
+      fieldLabel,
+      payload.locator
+    );
+  }
+
+  // Knowledge Tree: record form submit
+  if (payload.action === 'submit' && payload.locator) {
+    stateGraph.addInteraction(
+      payload.url,
+      'submit',
+      'Form Gönderimi',
+      payload.locator
+    );
   }
 
   if (payload.url) {
@@ -526,6 +582,24 @@ async function executeNextReplayStep(tabId) {
     return;
   }
 
+  // Wait for the tab to finish loading if a navigation is in progress
+  try {
+    let tab = await chrome.tabs.get(tabId);
+    let waitCycles = 0;
+    while (tab.status === 'loading' && waitCycles < 30) { // Max 15 seconds wait
+      console.log(`[Testocan BG] Tab is loading, waiting before step ${rs.currentStep}...`);
+      await new Promise((r) => setTimeout(r, 500));
+      tab = await chrome.tabs.get(tabId);
+      waitCycles++;
+    }
+    // Give it a tiny extra breathing room after status turns complete
+    if (waitCycles > 0) {
+      await new Promise((r) => setTimeout(r, 800));
+    }
+  } catch (err) {
+    console.warn('[Testocan BG] Error checking tab status:', err);
+  }
+
   const step = rs.events[rs.currentStep];
   const delayMs = rs.speed === 'fast' ? 300 : rs.speed === 'slow' ? 1500 : 700;
 
@@ -536,9 +610,21 @@ async function executeNextReplayStep(tabId) {
       payload: { step, stepIndex: rs.currentStep },
     });
   } catch (err) {
-    // Content script might not be ready (page navigation)
-    // Wait and re-inject
-    await new Promise((r) => setTimeout(r, 1500));
+    // Content script might not be ready (page navigation or still loading)
+    console.log(`[Testocan BG] Content script missing for step ${rs.currentStep}, waiting for page load...`);
+    
+    try {
+      let tab = await chrome.tabs.get(tabId);
+      let waitCycles = 0;
+      while (tab.status === 'loading' && waitCycles < 20) { // Max 10 seconds wait
+        await new Promise((r) => setTimeout(r, 500));
+        tab = await chrome.tabs.get(tabId);
+        waitCycles++;
+      }
+    } catch (e) {}
+
+    // Wait extra time and re-inject
+    await new Promise((r) => setTimeout(r, 1000));
     try {
       await chrome.scripting.executeScript({
         target: { tabId },
@@ -560,13 +646,27 @@ async function executeNextReplayStep(tabId) {
   }
 }
 
-function handleReplayResult(tabId, payload) {
+async function handleReplayResult(tabId, payload) {
   const state = getTabState(tabId);
   if (!state.replayState) return;
 
   const rs = state.replayState;
   rs.results.push(payload);
-  rs.currentStep = payload.stepIndex + 1;
+
+  if (payload.result && payload.result.success === false) {
+    console.log('[Testocan BG] Replay step failed, aborting flow to capture exact moment:', payload.result.error);
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 70 });
+      rs.failureScreenshot = dataUrl;
+    } catch (e) {
+      console.warn('Could not capture failure screenshot:', e);
+    }
+    // Fast-forward to the end to stop executing further steps
+    rs.currentStep = rs.events.length;
+  } else {
+    rs.currentStep = payload.stepIndex + 1;
+  }
 
   const delayMs = rs.speed === 'fast' ? 300 : rs.speed === 'slow' ? 1500 : 700;
   setTimeout(() => executeNextReplayStep(tabId), delayMs);
@@ -625,6 +725,7 @@ async function runPostReplayAssertions(tabId) {
       assertionResults,
       errors: rs.errors,
       replayResults: rs.results,
+      failureScreenshot: rs.failureScreenshot,
     });
     
     state.taskRunState.currentFlowIndex++;
@@ -889,4 +990,8 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   }
 });
 
-console.log('[Testocan BG] Service worker initialized (v2 — full orchestrator).');
+// ── Side Panel: open on action icon click ────────────────────
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
+  .catch(err => console.warn('[Testocan BG] setPanelBehavior failed:', err));
+
+console.log('[Testocan BG] Service worker initialized (v3 — side panel + knowledge tree).');

@@ -1,5 +1,9 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { Bug, Camera, FileText, CheckCircle2, XCircle, Globe, Settings, Sparkles, Folder, PlayCircle, StopCircle, RefreshCw, Layers, LayoutList, Database, Circle, Network, History, Settings2, TreePine, ListTodo } from 'lucide-react';
+import Tree from 'react-d3-tree';
 import logoSrc from './logo.png';
+import { logoBase64 } from './logo_base64.js';
+import { WorkspaceSync } from '../shared/workspaceSync.js';
 
 const MSG = {
   START_RECORDING: 'TESTOCAN::START_RECORDING',
@@ -29,6 +33,10 @@ const MSG = {
   GET_TASK_STATUS: 'TESTOCAN::GET_TASK_STATUS',
   ENHANCE_TASK_REPORT: 'TESTOCAN::ENHANCE_TASK_REPORT',
   ANALYZE_KNOWLEDGE_GAPS: 'TESTOCAN::ANALYZE_KNOWLEDGE_GAPS',
+  GET_KNOWLEDGE_TREE: 'TESTOCAN::GET_KNOWLEDGE_TREE',
+  CLEAR_KNOWLEDGE: 'TESTOCAN::CLEAR_KNOWLEDGE',
+  SHOW_FLOATING_WIDGET: 'TESTOCAN::SHOW_FLOATING_WIDGET',
+  OPEN_SIDE_PANEL: 'TESTOCAN::OPEN_SIDE_PANEL',
 };
 
 const ACTION_ICONS = { click: '🖱️', input: '⌨️', change: '✏️', keydown: '⏎', submit: '📤', navigation: '🧭', scroll: '📜', focus: '🎯' };
@@ -58,7 +66,7 @@ function getStepMeta(event) {
   return `<${loc.tagName || '?'}>`;
 }
 
-const VIEW = { IDLE: 'idle', RECORDING: 'recording', RESULT: 'result', HISTORY: 'history', REPLAY: 'replay', SETTINGS: 'settings', TASKS: 'tasks' };
+const VIEW = { IDLE: 'idle', RECORDING: 'recording', RESULT: 'result', HISTORY: 'history', REPLAY: 'replay', SETTINGS: 'settings', TASKS: 'tasks', KNOWLEDGE: 'knowledge' };
 
 function sendMsg(type, payload = {}) {
   return new Promise((resolve) => {
@@ -95,7 +103,7 @@ async function saveFlowDirect(flow) {
 
 export default function App() {
   const [view, setView] = useState(VIEW.IDLE);
-  const [eventCount, setEventCount] = useState(0);
+    const [eventCount, setEventCount] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState(null);
   const [tabId, setTabId] = useState(null);
@@ -122,12 +130,38 @@ export default function App() {
   const [activeTask, setActiveTask] = useState(null);
   const [taskText, setTaskText] = useState('');
   const [taskRunState, setTaskRunState] = useState(null);
+  
+  // Website-centric State
+  const [savedDomains, setSavedDomains] = useState([]);
+  const [activeTabDomain, setActiveTabDomain] = useState('');
+  const [isScanning, setIsScanning] = useState(false);
 
   // ── Init ───────────────────────────────────────────────────
   useEffect(() => {
+    // Load domains
+    chrome.storage.local.get(['savedDomains', 'flows'], (data) => {
+      let domains = data.savedDomains || [];
+      if (domains.length === 0 && data.flows) {
+        // Extract domains from existing flows for backward compatibility
+        domains = [...new Set(data.flows.filter(f => f.url || f.startUrl).map(f => {
+          try { return new URL(f.url || f.startUrl).hostname; } catch(e) { return null; }
+        }).filter(Boolean))];
+        chrome.storage.local.set({ savedDomains: domains });
+      }
+      setSavedDomains(domains);
+    });
+
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (!tabs[0]) { setLoading(false); return; }
       setTabId(tabs[0].id);
+      
+      try {
+        const urlObj = new URL(tabs[0].url);
+        setActiveTabDomain(urlObj.hostname);
+      } catch (e) {
+        setActiveTabDomain('');
+      }
+
       sendMsg(MSG.GET_STATUS, { tabId: tabs[0].id }).then((res) => {
         if (res?.ok) {
           if (res.isRecording) {
@@ -170,12 +204,17 @@ export default function App() {
             const taskSnap = res.taskRunState;
             ; (async () => {
               try {
-                // 1. Take a final screenshot
-                const shotRes = await sendMsg(MSG.TAKE_SCREENSHOT, { tabId });
-                const finalScreenshot = shotRes?.ok ? shotRes.screenshot : null;
-
-                // 2. Build structured per-flow data for AI
+                // 1. Build structured per-flow data for AI
                 const tResult = taskSnap.results || [];
+                
+                // 2. Take a final screenshot or use the failure screenshot
+                const firstFailedFlow = tResult.find(tr => tr.failureScreenshot);
+                let finalScreenshot = firstFailedFlow ? firstFailedFlow.failureScreenshot : null;
+                if (!finalScreenshot) {
+                  const shotRes = await sendMsg(MSG.TAKE_SCREENSHOT, { tabId });
+                  finalScreenshot = shotRes?.ok ? shotRes.screenshot : null;
+                }
+
                 let allPassed = true;
                 const flowsData = tResult.map(tr => {
                   const hErr = tr.errors && (tr.errors.networkErrors?.length > 0 || tr.errors.consoleErrors?.length > 0 || tr.errors.jsErrors?.length > 0);
@@ -206,7 +245,7 @@ export default function App() {
 
                 // 3. Call Gemini to generate comprehensive report
                 const enhRes = await sendMsg(MSG.ENHANCE_TASK_REPORT, { taskData });
-                const reportMd = enhRes?.ok ? enhRes.description : `# Görev Raporu: ${taskData.taskName}\n\n${flowsData.map((f, i) => `## ${i + 1}. ${f.flowName}\n**Durum:** ${f.passed ? '✅ Başarılı' : '❌ Başarısız'}\n`).join('')}`;
+                const reportMd = enhRes?.ok ? enhRes.description : `# Görev Raporu: ${taskData.taskName}\n\n${flowsData.map((f, i) => `## ${i + 1}. ${f.flowName}\n**Durum:** ${f.passed ? 'Başarılı' : 'Başarısız'}\n`).join('')}`;
 
                 // 4. Store and open rich report
                 const reportPayload = {
@@ -219,7 +258,7 @@ export default function App() {
                   flowSummary: flowsData.map(f => ({ name: f.flowName, passed: f.passed })),
                 };
 
-                // 5. Persist lastRunAt + lastReportData to the task so "Görev Raporu Gör" works later
+                // 5. Persist lastRunAt + lastReportData to the task so "<span style={{display:'flex', alignItems:'center', gap:'6px'}}><FileText size={14}/> Görev Raporu Gör</span>" works later
                 chrome.storage.local.get(['tasks'], (storageData) => {
                   const currentTasks = storageData.tasks || [];
                   const updatedTasks = currentTasks.map(t => {
@@ -268,9 +307,19 @@ export default function App() {
                 (async () => {
                   try {
                     setActionLoading('screenshot');
-                    const shotRes = await sendMsg(MSG.TAKE_SCREENSHOT, { tabId });
-                    let shot = null;
-                    if (shotRes?.ok) { shot = shotRes.screenshot; setScreenshot(shot); }
+                    let shot = res.replayState.failureScreenshot || null;
+                    
+                    // If no step failed, but we caught a network error, use its precise screenshot
+                    if (!shot && errs && errs.requests?.length > 0) {
+                      const firstNetErr = errs.requests.find(e => e.isError && e.errorScreenshot);
+                      if (firstNetErr) shot = firstNetErr.errorScreenshot;
+                    }
+                    
+                    if (!shot) {
+                      const shotRes = await sendMsg(MSG.TAKE_SCREENSHOT, { tabId });
+                      if (shotRes?.ok) { shot = shotRes.screenshot; }
+                    }
+                    setScreenshot(shot);
 
                     setActionLoading('report');
                     const repRes = await sendMsg(MSG.GENERATE_REPORT, {
@@ -313,6 +362,116 @@ export default function App() {
     if (res?.ok) { setView(VIEW.RECORDING); setEventCount(0); setElapsed(0); bgStartTimeRef.current = Date.now(); }
     else setError(res?.error || 'Failed');
   }, [tabId]);
+
+  const handleAddWebsite = async () => {
+    if (!activeTabDomain || !tabId) return;
+    setIsScanning(true);
+    
+    // Inject the scanning effect script into the active tab
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => {
+          
+          // Smooth pseudo-element scanner
+          const style = document.createElement('style');
+          style.id = 'testocan-scanner-style';
+          style.textContent = `
+            .testocan-scanner-overlay {
+              position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+              pointer-events: none; z-index: 2147483646; overflow: hidden;
+            }
+            .testocan-scan-beam {
+              position: absolute; top: 0; bottom: 0; width: 20vw;
+              background: linear-gradient(to right, transparent, rgba(189, 0, 255, 0.1), rgba(255, 0, 128, 0.5), rgba(189, 0, 255, 0.1), transparent);
+              box-shadow: 0 0 60px rgba(189, 0, 255, 0.4);
+              transform: translateX(-100vw) skewX(-15deg);
+              will-change: transform;
+            }
+            .testocan-scanned-element {
+              position: relative !important;
+            }
+            .testocan-scanned-element::after {
+              content: ''; position: absolute; inset: -2px; border-radius: 6px;
+              box-shadow: 0 0 20px rgba(189, 0, 255, 0), inset 0 0 10px rgba(189, 0, 255, 0);
+              pointer-events: none; z-index: 2147483647;
+              transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+              opacity: 0; border: 1px solid transparent;
+            }
+            .testocan-scanned-element.illuminated::after {
+              opacity: 1;
+              box-shadow: 0 0 25px rgba(189, 0, 255, 0.8), inset 0 0 15px rgba(189, 0, 255, 0.3);
+              border-color: rgba(189, 0, 255, 0.8);
+              background: rgba(189, 0, 255, 0.05);
+            }
+          `;
+          document.head.appendChild(style);
+
+          const overlay = document.createElement('div');
+          overlay.className = 'testocan-scanner-overlay';
+          const beam = document.createElement('div');
+          beam.className = 'testocan-scan-beam';
+          overlay.appendChild(beam);
+          document.body.appendChild(overlay);
+
+          const elements = Array.from(document.querySelectorAll('div, a, button, section, header, footer, input, form, span, p, h1, h2, h3, img'))
+            .filter(el => {
+               const rect = el.getBoundingClientRect();
+               return rect.width > 30 && rect.height > 20 && rect.top < window.innerHeight && rect.bottom > 0;
+            }).sort(() => 0.5 - Math.random()).slice(0, 60);
+
+          elements.forEach(el => el.classList.add('testocan-scanned-element'));
+
+          let start = null;
+          const duration = 2500; // slightly longer for smoothness
+          
+          const step = (timestamp) => {
+            if (!start) start = timestamp;
+            const progress = (timestamp - start) / duration;
+            if (progress > 1) {
+              overlay.remove();
+              style.remove();
+              elements.forEach(el => {
+                  el.classList.remove('testocan-scanned-element');
+                  el.classList.remove('illuminated');
+              });
+              return;
+            }
+            
+            // Move beam from -20vw to 120vw
+            const beamX = (progress * 1.4 - 0.2) * window.innerWidth;
+            beam.style.transform = `translateX(${beamX}px) skewX(-15deg)`;
+            
+            // Illuminate elements near the beam
+            elements.forEach(el => {
+              const rect = el.getBoundingClientRect();
+              const elCenter = rect.left + rect.width / 2;
+              const distance = Math.abs(elCenter - (beamX + window.innerWidth * 0.1));
+              
+              if (distance < window.innerWidth * 0.15) {
+                el.classList.add('illuminated');
+              } else {
+                el.classList.remove('illuminated');
+              }
+            });
+            
+            requestAnimationFrame(step);
+          };
+          requestAnimationFrame(step);
+        }
+      });
+    } catch (e) {
+      console.warn("Could not inject script:", e);
+    }
+
+    // Wait 2 seconds for effect to finish
+    setTimeout(() => {
+      const newDomains = [...savedDomains, activeTabDomain];
+      setSavedDomains(newDomains);
+      chrome.storage.local.set({ savedDomains: newDomains });
+      setIsScanning(false);
+    }, 2000);
+  };
 
   const stopRecording = useCallback(async () => {
     if (!tabId) return;
@@ -357,6 +516,14 @@ export default function App() {
 
   const applyAIPrompt = useCallback(async () => {
     if (!aiPrompt || !lastFlow) return;
+    
+    // Quick API Key check before making the background call
+    const keyData = await new Promise(resolve => chrome.storage.local.get('geminiApiKey', resolve));
+    if (!keyData.geminiApiKey) {
+      alert("Yapay Zeka özelliğini kullanabilmek için lütfen 'Ayarlar' ikonuna tıklayıp Google AI Studio API anahtarınızı girin.");
+      return;
+    }
+
     setActionLoading('ai');
     setError(null);
     const res = await sendMsg(MSG.AI_MODIFY_FLOW, { prompt: aiPrompt, events: lastFlow.events });
@@ -424,7 +591,7 @@ export default function App() {
     const res = await sendMsg(MSG.JIRA_CREATE_ISSUE, { report: bugReport });
     if (res?.ok && res.success) {
       setError(null);
-      alert(`✅ Jira issue created: ${res.issueKey}\n${res.issueUrl}`);
+      alert(`Jira issue created: ${res.issueKey}\n${res.issueUrl}`);
     } else {
       setError(res?.error || 'Jira creation failed');
     }
@@ -433,27 +600,106 @@ export default function App() {
   const formatTime = (s) => `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
   const formatDate = (ts) => new Date(ts).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
 
+  const handleMinimize = async () => {
+    const res = await new Promise(r => chrome.storage.local.get(['widgetPosition'], r));
+    const position = res.widgetPosition || 'bottom-right';
+    if (tabId) {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          func: (pos, iconUrl, MSG_OPEN) => {
+            let existing = document.getElementById('testocan-floating-widget');
+            if (existing) existing.remove();
+
+            const widget = document.createElement('div');
+            widget.id = 'testocan-floating-widget';
+            widget.style.position = 'fixed';
+            widget.style.width = '64px';
+            widget.style.height = '64px';
+            widget.style.zIndex = '2147483647';
+            widget.style.cursor = 'pointer';
+            widget.style.borderRadius = '50%';
+            widget.style.filter = 'drop-shadow(0 8px 16px rgba(245, 166, 35, 0.4))';
+            widget.style.transition = 'transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)';
+
+            const img = document.createElement('img');
+            img.src = iconUrl;
+            img.style.width = '100%';
+            img.style.height = '100%';
+            img.style.objectFit = 'contain';
+            img.style.pointerEvents = 'none';
+            widget.appendChild(img);
+
+            if (pos === 'bottom-right') { widget.style.bottom = '24px'; widget.style.right = '24px'; }
+            else if (pos === 'bottom-left') { widget.style.bottom = '24px'; widget.style.left = '24px'; }
+            else if (pos === 'top-right') { widget.style.top = '24px'; widget.style.right = '24px'; }
+            else if (pos === 'top-left') { widget.style.top = '24px'; widget.style.left = '24px'; }
+
+            widget.onmouseenter = () => widget.style.transform = 'scale(1.15) rotate(5deg)';
+            widget.onmouseleave = () => widget.style.transform = 'scale(1) rotate(0deg)';
+            
+            widget.onclick = () => {
+              chrome.runtime.sendMessage({ type: MSG_OPEN }).catch(() => {});
+              widget.remove();
+            };
+            document.body.appendChild(widget);
+          },
+          args: [position, logoBase64, MSG.OPEN_SIDE_PANEL]
+        });
+      } catch (e) {
+        console.error("Widget injection failed:", e);
+      }
+    }
+    window.close();
+  };
+
   if (loading) return <div className="testocan-popup"><Header /><div className="action-section"><p className="hint">Bağlanıyor…</p></div></div>;
+
+
 
   return (
     <div className="testocan-popup">
       <Header
+        onLogoClick={handleMinimize}
+        onRecordClick={() => setView(VIEW.IDLE)}
         onHistoryClick={() => setView(view === VIEW.HISTORY ? VIEW.IDLE : VIEW.HISTORY)}
         onSettingsClick={() => setView(view === VIEW.SETTINGS ? VIEW.IDLE : VIEW.SETTINGS)}
         onTasksClick={() => setView(view === VIEW.TASKS ? VIEW.IDLE : VIEW.TASKS)}
+        onKnowledgeClick={() => setView(view === VIEW.KNOWLEDGE ? VIEW.IDLE : VIEW.KNOWLEDGE)}
         showNav={view !== VIEW.RECORDING && view !== VIEW.REPLAY}
         flowCount={savedFlows.length}
+        activeView={view}
       />
 
       {view === VIEW.IDLE && (
         <>
           <StatusBar recording={false} />
           <div className="action-section">
-            <button className="record-btn start" onClick={startRecording}>
-              <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor"><circle cx="9" cy="9" r="7" /></svg>
-              <span>Kaydı Başlat</span>
-            </button>
-            <p className="hint">Aktif sekmede kullanıcı etkileşimlerini kaydetmek için tıklayın.</p>
+            {isScanning ? (
+              <div style={{ textAlign: 'center', padding: '16px' }}>
+                <div style={{ color: 'var(--accent-light)', fontSize: '14px', fontWeight: 'bold', marginBottom: '8px', animation: 'pulse 1s infinite alternate' }}><span style={{display:'flex', alignItems:'center', gap:'6px', justifyContent:'center'}}><RefreshCw size={14} className="spin"/> Site Taranıyor...</span></div>
+                <p className="hint">Yapay zeka site bileşenlerini bilgi bankasına ekliyor.</p>
+              </div>
+            ) : savedDomains.includes(activeTabDomain) ? (
+              <>
+                <div style={{ marginBottom: '16px', background: 'rgba(245, 166, 35, 0.1)', border: '1px solid var(--accent)', padding: '8px 12px', borderRadius: '8px', color: 'var(--accent-light)', fontSize: '12px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
+                  <span></span> <span>{activeTabDomain}</span>
+                </div>
+                <button className="record-btn start" onClick={startRecording}>
+                  <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor"><circle cx="9" cy="9" r="7" /></svg>
+                  <span>Kaydı Başlat</span>
+                </button>
+                <p className="hint">Site bilgi bankasında kayıtlı. Etkileşimleri kaydetmek için tıklayın.</p>
+              </>
+            ) : (
+              <>
+                <button className="record-btn" style={{ background: 'linear-gradient(135deg, #4facfe, #00f2fe)', borderColor: '#4facfe', color: '#fff' }} onClick={handleAddWebsite}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+                  <span style={{ marginLeft: '4px' }}>Yeni Web Sitesi Ekle</span>
+                </button>
+                <p className="hint">Bu site (<b>{activeTabDomain || 'Bilinmeyen'}</b>) henüz bilgi bankasında yok. Başlamadan önce siteyi ekleyin.</p>
+              </>
+            )}
           </div>
         </>
       )}
@@ -523,6 +769,8 @@ export default function App() {
 
       {view === VIEW.SETTINGS && <SettingsView />}
 
+      {view === VIEW.KNOWLEDGE && <KnowledgeTreeView />}
+
       {error && <div className="error-bar"><span>⚠</span><span>{error}</span></div>}
       <footer className="footer"><span>Testocan AI QA Ajanı</span></footer>
     </div>
@@ -533,33 +781,43 @@ export default function App() {
 //  SUB-COMPONENTS
 // ══════════════════════════════════════════════════════════════
 
-function Header({ onHistoryClick, onSettingsClick, onTasksClick, showNav = true, flowCount = 0 }) {
+function Header({ onLogoClick, onRecordClick, onHistoryClick, onSettingsClick, onTasksClick, onKnowledgeClick, showNav = true, flowCount = 0, activeView = '' }) {
   return (
     <header className="header">
-      <div className="logo">
+      <div className="logo" onClick={onLogoClick} style={{ cursor: 'pointer' }} title="Uygulamayı Küçült">
         <div className="logo-icon">
           <img src={logoSrc} alt="Testocan" />
         </div>
         <span className="logo-text">Testocan</span>
       </div>
       <div className="header-actions">
+        {showNav && onRecordClick && (
+          <button className="icon-btn" onClick={onRecordClick} title="Kayıt Ekranı" style={activeView === 'idle' || activeView === 'recording' ? { borderColor: 'var(--accent)', background: 'rgba(245,166,35,0.1)' } : {}}>
+            <Circle size={14} color="#f44336" fill="#f44336" />
+          </button>
+        )}
+        {showNav && onKnowledgeClick && (
+          <button className="icon-btn" onClick={onKnowledgeClick} title="Bilgi Havuzu" style={activeView === 'knowledge' ? { borderColor: 'var(--accent)', background: 'rgba(245,166,35,0.1)' } : {}}>
+            <Network size={16} />
+          </button>
+        )}
         {showNav && onTasksClick && (
-          <button className="icon-btn" onClick={onTasksClick} title="Görevler">
-            📋
+          <button className="icon-btn" onClick={onTasksClick} title="Görevler" style={activeView === 'tasks' ? { borderColor: 'var(--accent)', background: 'rgba(245,166,35,0.1)' } : {}}>
+            <ListTodo size={16} />
           </button>
         )}
         {showNav && onHistoryClick && (
-          <button className="icon-btn" onClick={onHistoryClick} title="Kaydedilen Akışlar">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M2 4h12M2 8h12M2 12h8" strokeLinecap="round" /></svg>
+          <button className="icon-btn" onClick={onHistoryClick} title="Kaydedilen Akışlar" style={activeView === 'history' ? { borderColor: 'var(--accent)', background: 'rgba(245,166,35,0.1)' } : {}}>
+            <History size={16} />
             {flowCount > 0 && <span className="badge">{flowCount}</span>}
           </button>
         )}
         {showNav && onSettingsClick && (
-          <button className="icon-btn" onClick={onSettingsClick} title="Ayarlar">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="2.5" /><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5L13 13M3 13l1.5-1.5M11.5 4.5L13 3" strokeLinecap="round" /></svg>
+          <button className="icon-btn" onClick={onSettingsClick} title="Ayarlar" style={activeView === 'settings' ? { borderColor: 'var(--accent)', background: 'rgba(245,166,35,0.1)' } : {}}>
+            <Settings2 size={16} />
           </button>
         )}
-        <span className="version">v0.2.0</span>
+        <span className="version">v0.3.0</span>
       </div>
     </header>
   );
@@ -599,7 +857,7 @@ function ResultView({ flow, aiPrompt, setAiPrompt, aiChanges, applyAIPrompt, mod
       {/* Summary */}
       <div className={`result-summary ${hasReplayResults ? (flow.assertionResults?.every(a => a.passed) !== false ? 'success' : 'fail') : 'neutral'}`}>
         <div className="result-summary-left">
-          <span className="result-icon">{hasReplayResults ? (flow.assertionResults?.every(a => a.passed) !== false ? '✅' : '❌') : '📋'}</span>
+          <span className="result-icon">{hasReplayResults ? (flow.assertionResults?.every(a => a.passed) !== false ? '' : '') : ''}</span>
           <div>
             <div className="result-title">{hasReplayResults ? 'Replay Complete' : 'Recording Complete'}</div>
             <div className="result-subtitle">{flow.events.length} steps · {Math.floor(duration / 60) > 0 ? Math.floor(duration / 60) + 'm ' : ''}{duration % 60}s · {formatDate(flow.startedAt)}</div>
@@ -621,7 +879,7 @@ function ResultView({ flow, aiPrompt, setAiPrompt, aiChanges, applyAIPrompt, mod
           <div className="assertion-results">
             {flow.assertionResults.map((a, i) => (
               <div key={i} className={`assertion-item ${a.passed ? 'pass' : 'fail'}`}>
-                <span className="assertion-status">{a.passed ? '✅' : '❌'}</span>
+                <span className="assertion-status">{a.passed ? '' : ''}</span>
                 <span className="assertion-msg">{a.message}</span>
               </div>
             ))}
@@ -660,13 +918,13 @@ function ResultView({ flow, aiPrompt, setAiPrompt, aiChanges, applyAIPrompt, mod
             {flow.events.filter(e => e.action !== 'scroll' && e.action !== 'focus').map((event, i) => (
               <div className={`step-item ${flow.replayResults?.[i]?.result?.success === false ? 'step-failed' : ''}`} key={i}>
                 <div className="step-number">{i + 1}</div>
-                <div className="step-icon">{ACTION_ICONS[event.action] || '❓'}</div>
+                <div className="step-icon">{ACTION_ICONS[event.action] || ''}</div>
                 <div className="step-content">
                   <div className="step-label">{getStepLabel(event)}</div>
                   <div className="step-meta">{getStepMeta(event)}</div>
                 </div>
                 {flow.replayResults?.[i] && (
-                  <span className="step-status">{flow.replayResults[i].result?.success ? '✅' : '❌'}</span>
+                  <span className="step-status">{flow.replayResults[i].result?.success ? '' : ''}</span>
                 )}
               </div>
             ))}
@@ -677,8 +935,8 @@ function ResultView({ flow, aiPrompt, setAiPrompt, aiChanges, applyAIPrompt, mod
       {/* AI Parameterization */}
       <div className="section">
         <div className="steps-header">
-          <span>🤖 AI Parametreleştirme</span>
-          {aiSource && <span className={`ai-source-badge ${aiSource}`}>{aiSource === 'gemini' ? '✨ Gemini' : '📐 Kural Tabanlı'}</span>}
+          <span><span style={{display:'flex', alignItems:'center', gap:'6px'}}><Sparkles size={14}/> AI Parametreleştirme</span></span>
+          {aiSource && <span className={`ai-source-badge ${aiSource}`}>{aiSource === 'gemini' ? 'Gemini' : 'Kural Tabanlı'}</span>}
         </div>
         <div className="ai-section">
           <input className="ai-input" placeholder="ör. Bayi Kodu B002, Bölge İç Anadolu olarak çalıştır..." value={aiPrompt} onChange={(e) => setAiPrompt(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && applyAIPrompt()} />
@@ -692,7 +950,7 @@ function ResultView({ flow, aiPrompt, setAiPrompt, aiChanges, applyAIPrompt, mod
               <div key={i} className="ai-change-item" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {c.eventIndex === -1 ? (
                   <>
-                    <span className="ai-field" style={{ color: '#4facfe' }}>📐 Structure</span>
+                    <span className="ai-field" style={{ color: '#4facfe' }}>Structure</span>
                     <span className="ai-arrow">→</span>
                     <span className="ai-old">{c.oldValue}</span>
                     <span className="ai-arrow">→</span>
@@ -747,10 +1005,10 @@ function ResultView({ flow, aiPrompt, setAiPrompt, aiChanges, applyAIPrompt, mod
         </div>
         <div className="action-row">
           <button className="secondary-btn" onClick={onScreenshot} disabled={actionLoading === 'screenshot'}>
-            {actionLoading === 'screenshot' ? '⏳ Alınıyor...' : '📸 Ekran Görüntüsü'}
+            {actionLoading === 'screenshot' ? '⏳ Alınıyor...' : <span style={{display:'flex', alignItems:'center', gap:'6px'}}><Camera size={14}/> Ekran Görüntüsü</span>}
           </button>
           <button className="secondary-btn" onClick={onGenerateReport} disabled={actionLoading === 'report'}>
-            {actionLoading === 'report' ? '⏳ Oluşturuluyor...' : '🐛 Hata Raporu'}
+            {actionLoading === 'report' ? '⏳ Oluşturuluyor...' : <span style={{display:'flex', alignItems:'center', gap:'6px'}}><Bug size={14}/> Hata Raporu</span>}
           </button>
           <button className="secondary-btn" onClick={onNewRecording}>🔄 Yeni</button>
         </div>
@@ -759,19 +1017,19 @@ function ResultView({ flow, aiPrompt, setAiPrompt, aiChanges, applyAIPrompt, mod
       {/* Bug Report Preview */}
       {bugReport && (
         <div className="section">
-          <div className="steps-header"><span>🐛 Hata Raporu</span></div>
+          <div className="steps-header"><span style={{display:'flex', alignItems:'center', gap:'6px'}}><Bug size={14}/> Hata Raporu</span></div>
           <div className="report-preview">
             <div className="report-title">{bugReport.title}</div>
             <div className="report-severity">Severity: <span className={`sev-${bugReport.severity}`}>{bugReport.severity}</span></div>
             {bugReport.labels && <div className="report-labels">{bugReport.labels.map((l, i) => <span key={i} className="report-label">{l}</span>)}</div>}
             <pre className="report-body">{bugReport.description}</pre>
             <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
-              <button className="record-btn jira" onClick={onCreateJira}>🔗 Jira'ya Aktar</button>
+              <button className="record-btn jira" onClick={onCreateJira}><span style={{display:'flex', alignItems:'center', gap:'6px'}}><Settings size={14}/> Jira'ya Aktar</span></button>
               <button className="record-btn" onClick={() => {
                 chrome.storage.local.set({ report_data_temp: { ...bugReport, screenshot } }, () => {
                   chrome.tabs.create({ url: chrome.runtime.getURL('report.html') });
                 });
-              }} style={{ background: '#2c3e50' }}>📄 Yeni Sekmede Aç</button>
+              }} style={{ background: '#2c3e50' }}><span style={{display:'flex', alignItems:'center', gap:'6px'}}><FileText size={14}/> Yeni Sekmede Aç</span></button>
             </div>
           </div>
         </div>
@@ -779,7 +1037,7 @@ function ResultView({ flow, aiPrompt, setAiPrompt, aiChanges, applyAIPrompt, mod
 
       {screenshot && (
         <div className="section">
-          <div className="steps-header"><span>📸 Ekran Görüntüsü</span></div>
+          <div className="steps-header"><span style={{display:'flex', alignItems:'center', gap:'6px'}}><Camera size={14}/> Ekran Görüntüsü</span></div>
           <img src={screenshot} className="screenshot-preview" alt="Screenshot" />
         </div>
       )}
@@ -812,30 +1070,123 @@ function ReplayView({ replayState, onStop }) {
 }
 
 function HistoryView({ flows, onSelect, onClearAll, formatDate }) {
-  const sorted = [...flows].reverse();
-  const total = flows.length;
+  const [expandedDomains, setExpandedDomains] = useState({});
+  const [selectedFilterDomain, setSelectedFilterDomain] = useState('');
+
+  const flowsByDomain = useMemo(() => {
+    const groups = {};
+    const sorted = [...flows].reverse();
+    sorted.forEach((flow, i) => {
+      let domain = 'Bilinmeyen Domain';
+      if (flow.startUrl || flow.url) {
+        try {
+          const urlObj = new URL(flow.startUrl || flow.url);
+          domain = urlObj.hostname;
+        } catch(e) { }
+      }
+      if (!groups[domain]) groups[domain] = [];
+      const flowNumber = flows.length - i;
+      groups[domain].push({ ...flow, flowNumber });
+    });
+    return groups;
+  }, [flows]);
+
+  // Auto-expand all domains by default on load
+  useEffect(() => {
+    const initialExpanded = {};
+    Object.keys(flowsByDomain).forEach(domain => initialExpanded[domain] = true);
+    setExpandedDomains(initialExpanded);
+  }, [flowsByDomain]);
+
+  const toggleDomain = (domain) => {
+    setExpandedDomains(prev => ({ ...prev, [domain]: !prev[domain] }));
+  };
+
+  const onImportFlow = () => {
+    const input = prompt("Lütfen 'TESTOCAN_FLOW_...' ile başlayan akış verisini yapıştırın:");
+    if (!input || !input.trim().startsWith('TESTOCAN_FLOW_')) {
+      if (input) alert("Geçersiz akış formatı!");
+      return;
+    }
+    try {
+      const base64Data = input.replace('TESTOCAN_FLOW_', '');
+      const jsonStr = decodeURIComponent(escape(atob(base64Data)));
+      const parsedFlow = JSON.parse(jsonStr);
+      if (!parsedFlow.id || !parsedFlow.events) throw new Error("Eksik veri");
+      
+      chrome.storage.local.get(['flows'], (data) => {
+        const currentFlows = data.flows || [];
+        parsedFlow.id = crypto.randomUUID();
+        parsedFlow.name = (parsedFlow.name || 'İçe Aktarılan Akış') + ' (Imported)';
+        chrome.storage.local.set({ flows: [...currentFlows, parsedFlow] }, () => {
+          alert("Akış başarıyla bilgi bankasına eklendi!");
+          window.location.reload(); 
+        });
+      });
+    } catch (err) {
+      alert("Akış içe aktarılırken hata oluştu: " + err.message);
+    }
+  };
+
   return (
     <div className="history-view">
-      <div className="steps-header"><span>Kaydedilen Akışlar</span>{flows.length > 0 && <button className="clear-btn" onClick={onClearAll}>Temizle</button>}</div>
-      {sorted.length === 0 ? <div className="steps-empty"><span>Henüz kaydedilmiş akış yok.</span></div> : (
-        <div className="steps-scroll">
-          {sorted.map((flow, i) => {
-            // Assign display name: prefer explicit name, fall back to Akış-N
-            const flowNumber = total - i;
-            const displayName = flow.name || `Akış-${flowNumber}`;
-            return (
-              <div className="flow-item" key={flow.id || i} onClick={() => onSelect(flow)}>
-                <div className="flow-item-left">
-                  <div className="flow-item-title">
-                    {displayName}
-                    {flow.aiPrompt && <span className="ai-source-badge gemini" style={{ marginLeft: 6 }}>🤖 AI</span>}
-                  </div>
-                  <div className="flow-item-meta">{flow.events.length} adım · {formatDate(flow.startedAt)}</div>
-                </div>
-                <svg className="flow-chevron" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M5 3l4 4-4 4" strokeLinecap="round" strokeLinejoin="round" /></svg>
+      <div className="steps-header" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '10px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{display:'flex', alignItems:'center', gap:'6px'}}><Layers size={14}/> Kaydedilen Akışlar</span>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button className="clear-btn" style={{ background: 'rgba(76, 175, 80, 0.2)', color: '#4caf50', borderColor: 'rgba(76, 175, 80, 0.3)' }} onClick={onImportFlow}>İçe Aktar</button>
+            {flows.length > 0 && <button className="clear-btn" onClick={onClearAll}>Temizle</button>}
+          </div>
+        </div>
+        {Object.keys(flowsByDomain).length > 0 && (
+          <select 
+            value={selectedFilterDomain} 
+            onChange={e => setSelectedFilterDomain(e.target.value)}
+            className="modern-select"
+          >
+            <option value="">-- Tüm Siteler --</option>
+            {Object.keys(flowsByDomain).map(d => <option key={d} value={d}>{d}</option>)}
+          </select>
+        )}
+      </div>
+      {flows.length === 0 ? <div className="empty-state-card">
+          <Folder size={40} className="empty-icon" />
+          <h3>Henüz Kayıtlı Akış Yok</h3>
+          <p>Hiçbir test akışı kaydetmemişsiniz. Ana ekrandan "Kaydı Başlat" diyerek ilk testinizi oluşturabilirsiniz.</p>
+        </div> : (
+        <div className="steps-scroll" style={{ padding: '0 8px' }}>
+          {Object.entries(flowsByDomain)
+            .filter(([domain]) => !selectedFilterDomain || domain === selectedFilterDomain)
+            .map(([domain, domainFlows]) => (
+            <div key={domain} className="history-domain-group">
+              <div className="history-domain-header" onClick={() => toggleDomain(domain)}>
+                <span className="history-domain-icon"></span>
+                <span className="history-domain-name">{domain}</span>
+                <span className="history-domain-count">{domainFlows.length} akış</span>
+                <span className="history-domain-toggle">{expandedDomains[domain] ? '▼' : '▶'}</span>
               </div>
-            );
-          })}
+              
+              {expandedDomains[domain] && (
+                <div className="history-domain-flows">
+                  {domainFlows.map((flow) => {
+                    const displayName = flow.name || `Akış-${flow.flowNumber}`;
+                    return (
+                      <div className="flow-item" key={flow.id} onClick={() => onSelect(flow)}>
+                        <div className="flow-item-left">
+                          <div className="flow-item-title">
+                            {displayName}
+                            {flow.aiPrompt && <span className="ai-source-badge gemini" style={{ marginLeft: 6 }}>AI</span>}
+                          </div>
+                          <div className="flow-item-meta">{flow.events.length} adım · {formatDate(flow.startedAt)}</div>
+                        </div>
+                        <svg className="flow-chevron" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M5 3l4 4-4 4" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -845,9 +1196,12 @@ function HistoryView({ flows, onSelect, onClearAll, formatDate }) {
 function SettingsView() {
   const [config, setConfig] = useState({ baseUrl: '', email: '', apiToken: '', projectKey: '', issueType: 'Bug' });
   const [geminiKey, setGeminiKey] = useState('');
+  const [widgetPosition, setWidgetPosition] = useState('bottom-right');
   const [geminiConfigured, setGeminiConfigured] = useState(false);
   const [saved, setSaved] = useState(false);
   const [geminiSaved, setGeminiSaved] = useState(false);
+  const [workspaceName, setWorkspaceName] = useState(null);
+  const [syncStatus, setSyncStatus] = useState('');
 
   useEffect(() => {
     sendMsg(MSG.JIRA_GET_CONFIG).then((res) => {
@@ -855,6 +1209,12 @@ function SettingsView() {
     });
     sendMsg(MSG.GEMINI_GET_STATUS).then((res) => {
       if (res?.ok) setGeminiConfigured(res.configured);
+    });
+    chrome.storage.local.get(['widgetPosition'], (res) => {
+      if (res.widgetPosition) setWidgetPosition(res.widgetPosition);
+    });
+    WorkspaceSync.checkWorkspace().then((res) => {
+      if (res.ok) setWorkspaceName(res.name);
     });
   }, []);
 
@@ -873,9 +1233,50 @@ function SettingsView() {
     setTimeout(() => setGeminiSaved(false), 2000);
   };
 
+  const handleSelectWorkspace = async () => {
+    const res = await WorkspaceSync.selectWorkspace();
+    if (res.ok) setWorkspaceName(res.name);
+    else alert(res.error);
+  };
+
+  const handleExport = async () => {
+    const res = await WorkspaceSync.exportData();
+    if (res.ok) { setSyncStatus('Dışa aktarıldı!'); setTimeout(() => setSyncStatus(''), 2000); }
+    else alert('Hata: ' + res.error);
+  };
+
+  const handleImport = async () => {
+    const res = await WorkspaceSync.importData();
+    if (res.ok) { 
+      setSyncStatus(`İçe aktarıldı (${res.flowsCount || 0} akış)`);
+      setTimeout(() => setSyncStatus(''), 2000); 
+    }
+    else alert('Hata: ' + res.error);
+  };
+
   return (
     <div className="settings-view">
-      <div className="steps-header"><span>🤖 Gemini AI</span>{geminiConfigured && <span className="gemini-badge">✅ Bağlı</span>}</div>
+      <div className="steps-header"><span><span style={{display:'flex', alignItems:'center', gap:'6px'}}><Settings2 size={14}/> Genel Ayarlar</span></span></div>
+      <div className="settings-form">
+        <label>Yüzen Logo (Widget) Konumu
+          <select 
+            value={widgetPosition} 
+            onChange={(e) => {
+              setWidgetPosition(e.target.value);
+              chrome.storage.local.set({ widgetPosition: e.target.value });
+            }}
+            className="modern-select"
+          >
+            <option value="bottom-right">Sağ Alt</option>
+            <option value="bottom-left">Sol Alt</option>
+            <option value="top-right">Sağ Üst</option>
+            <option value="top-left">Sol Üst</option>
+          </select>
+        </label>
+        <p className="settings-hint">Yan paneli küçülttüğünüzde web sayfasında çıkacak olan Testocan logosunun konumu.</p>
+      </div>
+
+      <div className="steps-header"><span><span style={{display:'flex', alignItems:'center', gap:'6px'}}><Sparkles size={14}/> Gemini AI</span></span>{geminiConfigured && <span className="gemini-badge">Bağlı</span>}</div>
       <div className="settings-form">
         <label>Gemini API Anahtarı
           <input
@@ -889,11 +1290,28 @@ function SettingsView() {
           API anahtarınızı <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" className="settings-link">Google AI Studio</a>'dan edinin. Akıllı parametreleştirme ve gelişmiş hata raporları için kullanılır.
         </p>
         <button className="record-btn start small" onClick={saveGemini} disabled={!geminiKey.trim()}>
-          {geminiSaved ? '✅ Kaydedildi!' : 'Gemini Anahtarını Kaydet'}
+          {geminiSaved ? 'Kaydedildi!' : 'Gemini Anahtarını Kaydet'}
         </button>
       </div>
 
-      <div className="steps-header"><span>🔗 Jira Ayarları</span></div>
+      <div className="steps-header"><span><span style={{display:'flex', alignItems:'center', gap:'6px'}}><Folder size={14}/> AI Çalışma Alanı (Ajan Entegrasyonu)</span></span>{workspaceName && <span className="gemini-badge">{workspaceName}</span>}</div>
+      <div className="settings-form">
+        <p className="settings-hint">
+          Test akışlarınızı bilgisayarınızdaki bir klasöre (örn: <b>.testocan</b>) bağlayarak Antigravity, Claude Code gibi ajanların doğrudan testleri düzenlemesini sağlayın.
+        </p>
+        {!workspaceName ? (
+          <button className="record-btn start small" onClick={handleSelectWorkspace}>Çalışma Alanı Seç</button>
+        ) : (
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button className="record-btn small" onClick={handleSelectWorkspace} style={{ flex: 1, backgroundColor: '#333' }}>Değiştir</button>
+            <button className="record-btn start small" onClick={handleExport} style={{ flex: 2 }}>Akışları Aktar (Export)</button>
+            <button className="record-btn stop small" onClick={handleImport} style={{ flex: 2, backgroundColor: '#10a37f' }}>Güncellemeleri Al</button>
+          </div>
+        )}
+        {syncStatus && <p className="settings-hint" style={{ color: '#10a37f', marginTop: 8 }}>{syncStatus}</p>}
+      </div>
+
+      <div className="steps-header"><span><span style={{display:'flex', alignItems:'center', gap:'6px'}}><Settings size={14}/> Jira Ayarları</span></span></div>
       <div className="settings-form">
         <label>Jira URL<input value={config.baseUrl} onChange={(e) => setConfig({ ...config, baseUrl: e.target.value })} placeholder="https://firma.atlassian.net" /></label>
         <label>E-posta<input value={config.email} onChange={(e) => setConfig({ ...config, email: e.target.value })} placeholder="siz@firma.com" /></label>
@@ -902,7 +1320,7 @@ function SettingsView() {
         <label>Konu Türü<select value={config.issueType} onChange={(e) => setConfig({ ...config, issueType: e.target.value })}>
           <option value="Bug">Hata (Bug)</option><option value="Task">Görev (Task)</option><option value="Story">Hikaye (Story)</option>
         </select></label>
-        <button className="record-btn start" onClick={saveJira}>{saved ? '✅ Kaydedildi!' : 'Jira Ayarlarını Kaydet'}</button>
+        <button className="record-btn start" onClick={saveJira}>{saved ? 'Kaydedildi!' : 'Jira Ayarlarını Kaydet'}</button>
       </div>
     </div>
   );
@@ -923,6 +1341,15 @@ function TasksView({ tasks, setTasks, activeTask, setActiveTask, taskText, setTa
   // null = picking primary flow; gap.id string = teaching a specific gap
   const [teachingGapId, setTeachingGapId] = React.useState(null);
   const [analyzingGaps, setAnalyzingGaps] = React.useState(false);
+  
+  const [domains, setDomains] = React.useState([]);
+  const [selectedDomain, setSelectedDomain] = React.useState('');
+
+  React.useEffect(() => {
+    chrome.storage.local.get(['savedDomains'], (data) => {
+      setDomains(data.savedDomains || []);
+    });
+  }, []);
 
   // Always reads fresh tasks from storage to avoid stale closure bugs
   const saveTaskToStorage = (tasksArr) => {
@@ -949,7 +1376,14 @@ function TasksView({ tasks, setTasks, activeTask, setActiveTask, taskText, setTa
     setActionLoading('task_split');
     setError(null);
     try {
-      const res = await sendMsg(MSG.SPLIT_TASK, { prompt: taskText });
+      // 1. Fetch available flows from KB
+      const data = await new Promise(resolve => chrome.storage.local.get(['flows'], resolve));
+      const allFlows = data.flows || [];
+      const slimFlows = allFlows.map(f => ({ id: f.id, name: f.name, desc: f.desc || '' }));
+
+      const finalPrompt = selectedDomain ? `[Hedef Site: ${selectedDomain}] ${taskText}` : taskText;
+      const res = await sendMsg(MSG.SPLIT_TASK, { prompt: finalPrompt, availableFlows: slimFlows });
+      
       if (res && res.ok && res.task) {
         // Validate the task structure from AI
         const rawTask = res.task;
@@ -959,17 +1393,62 @@ function TasksView({ tasks, setTasks, activeTask, setActiveTask, taskText, setTa
         }
         // Filter out any undefined/null flow items and ensure required fields
         const safeFlows = rawTask.flows.filter(f => f && typeof f === 'object' && f.name);
+        
         const newTask = {
           ...rawTask,
           flows: safeFlows,
           id: Date.now().toString()
         };
+
+        // Auto-match check
+        const primaryDef = safeFlows.find(f => f.isPrimary);
+        let autoMatchedFlow = null;
+        if (primaryDef && primaryDef.matchedPrimaryFlowId) {
+          autoMatchedFlow = allFlows.find(f => f.id === primaryDef.matchedPrimaryFlowId);
+          if (autoMatchedFlow) {
+            primaryDef.events = autoMatchedFlow.events;
+            console.log("Auto-matched primary flow from Knowledge Base:", autoMatchedFlow.name);
+          }
+        }
+
         // Read fresh tasks from storage before appending
-        chrome.storage.local.get(['tasks'], async (data) => {
-          const currentTasks = data.tasks || [];
+        chrome.storage.local.get(['tasks'], async (taskData) => {
+          const currentTasks = taskData.tasks || [];
           await saveTaskToStorage([...currentTasks, newTask]);
           setActiveTask(newTask);
           setTaskText('');
+
+          // If auto-matched, trigger gap analysis immediately
+          if (autoMatchedFlow) {
+            setAnalyzingGaps(true);
+            try {
+              const gapRes = await sendMsg(MSG.ANALYZE_KNOWLEDGE_GAPS, {
+                taskDesc: newTask.taskDescription,
+                taskFlows: newTask.flows,
+                primaryFlowEvents: autoMatchedFlow.events,
+              });
+              
+              const updatedTask = JSON.parse(JSON.stringify(newTask));
+              if (gapRes?.ok && gapRes.gaps) {
+                updatedTask.knowledgeGaps = gapRes.gaps.map(g => ({ ...g, learnedEvents: null }));
+              } else {
+                updatedTask.knowledgeGaps = [];
+              }
+              
+              // Save updated task back
+              chrome.storage.local.get(['tasks'], (d) => {
+                const cTasks = d.tasks || [];
+                const nTasks = cTasks.map(t => t.id === updatedTask.id ? updatedTask : t);
+                chrome.storage.local.set({ tasks: nTasks }, () => {
+                  setTasks([...nTasks]);
+                  setActiveTask(updatedTask); // ensure active matches storage
+                });
+              });
+
+            } finally {
+              setAnalyzingGaps(false);
+            }
+          }
         });
       } else {
         setError((res && res.error) || 'Görev çözümlenirken hata oluştu. Gemini API anahtarınızı kontrol edin.');
@@ -1006,7 +1485,7 @@ function TasksView({ tasks, setTasks, activeTask, setActiveTask, taskText, setTa
 
   const onRecordPrimary = () => {
     setView(VIEW.IDLE);
-    alert("Lütfen ana ekrandan 'Kaydı Başlat' diyerek testinizi yapın. Kayıt bittiğinde Geçmiş (📁) sekmesinden son akışı bulup buraya dönün.");
+    alert("Lütfen ana ekrandan 'Kaydı Başlat' diyerek testinizi yapın. Kayıt bittiğinde Geçmiş () sekmesinden son akışı bulup buraya dönün.");
   };
 
   // Open the flow picker for primary selection or for teaching a specific gap
@@ -1073,12 +1552,27 @@ function TasksView({ tasks, setTasks, activeTask, setActiveTask, taskText, setTa
       const updatedTask = JSON.parse(JSON.stringify(activeTask));
       const primaryDef = updatedTask.flows.find(f => f && f.isPrimary);
 
-      // Build knowledge bank: primary + all taught gaps
+      // Build knowledge bank: primary + all taught gaps + domain history
+      const data = await new Promise(resolve => chrome.storage.local.get(['flows'], resolve));
+      const allFlows = data.flows || [];
+      const domainFlows = allFlows.filter(f => {
+        try {
+          if (!f.url && !f.startUrl) return false;
+          const u = new URL(f.url || f.startUrl);
+          return u.hostname === selectedDomain;
+        } catch(e) { return false; }
+      });
+
       const lessonFlows = [
         { id: 'primary', label: 'Birincil Akış', events: primaryDef?.events || [] },
         ...(updatedTask.knowledgeGaps || [])
           .filter(g => g.learnedEvents)
           .map(g => ({ id: g.id, label: g.label, events: g.learnedEvents })),
+        ...domainFlows.map(df => ({
+          id: `hist_${df.id}`,
+          label: `Geçmiş Akış: ${df.name || 'İsimsiz'}`,
+          events: df.events || []
+        }))
       ];
 
       for (let i = 0; i < updatedTask.flows.length; i++) {
@@ -1110,8 +1604,28 @@ function TasksView({ tasks, setTasks, activeTask, setActiveTask, taskText, setTa
         {/* New Task Input */}
         <div style={{ padding: '16px 16px 0' }}>
           <div style={{ fontSize: '11px', fontWeight: '700', color: '#4facfe', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '10px' }}>
-            📋 Yeni Görev Oluştur
+            Yeni Görev Oluştur
           </div>
+          {domains.length === 0 ? (
+            <div className="empty-state-card" style={{ marginBottom: '16px' }}>
+              <Globe size={40} className="empty-icon" />
+              <h3>Kayıtlı Site Bulunamadı</h3>
+              <p>Görev oluşturabilmek için öncelikle ana ekrandan test edilecek bir web sitesini bilgi bankanıza eklemelisiniz.</p>
+            </div>
+          ) : (
+            <select
+              value={selectedDomain}
+              onChange={e => setSelectedDomain(e.target.value)}
+              style={{
+                width: '100%', boxSizing: 'border-box', padding: '10px', marginBottom: '12px',
+                background: 'rgba(0,0,0,0.25)', border: '1px solid #2a2d3a', borderRadius: '8px',
+                color: selectedDomain ? '#e8eaf0' : '#7a849e', fontSize: '13px', outline: 'none'
+              }}
+            >
+              <option value="">-- Hedef Site Seçin (Zorunlu) --</option>
+              {domains.map(d => <option key={d} value={d}>{d}</option>)}
+            </select>
+          )}
           <textarea
             value={taskText}
             onChange={e => setTaskText(e.target.value)}
@@ -1125,7 +1639,7 @@ function TasksView({ tasks, setTasks, activeTask, setActiveTask, taskText, setTa
           />
           <button
             onClick={handleCreateTask}
-            disabled={actionLoading === 'task_split' || !taskText}
+            disabled={actionLoading === 'task_split' || !taskText || !selectedDomain || domains.length === 0}
             style={{
               width: '100%', padding: '12px', marginTop: '10px', borderRadius: '8px', fontSize: '14px',
               fontWeight: '700', cursor: 'pointer', border: 'none',
@@ -1133,7 +1647,7 @@ function TasksView({ tasks, setTasks, activeTask, setActiveTask, taskText, setTa
               color: (actionLoading === 'task_split' || !taskText) ? '#666' : '#000',
             }}
           >
-            {actionLoading === 'task_split' ? '⏳ Çözümleniyor...' : 'Yapay Zeka ile Çözümle ✨'}
+            {actionLoading === 'task_split' ? '⏳ Çözümleniyor...' : 'Yapay Zeka ile Çözümle '}
           </button>
         </div>
 
@@ -1141,7 +1655,7 @@ function TasksView({ tasks, setTasks, activeTask, setActiveTask, taskText, setTa
         {tasks.length > 0 && (
           <div style={{ padding: '16px' }}>
             <div style={{ fontSize: '11px', fontWeight: '700', color: '#a0a5b0', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '10px' }}>
-              📁 Geçmiş Görevler
+              <span style={{display:'flex', alignItems:'center', gap:'6px'}}><Folder size={14}/> Geçmiş Görevler</span>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {tasks.map((t, i) => {
@@ -1167,7 +1681,7 @@ function TasksView({ tasks, setTasks, activeTask, setActiveTask, taskText, setTa
                       border: `1px solid ${allReady ? '#2a5298' : '#2a2d3a'}`,
                       display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '18px',
                     }}>
-                      📋
+                      
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: '13px', fontWeight: '600', color: '#e8eaf0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -1242,7 +1756,7 @@ function TasksView({ tasks, setTasks, activeTask, setActiveTask, taskText, setTa
                 background: f?.events ? 'rgba(79,172,254,0.15)' : 'rgba(255,255,255,0.06)',
                 color: f?.events ? '#4facfe' : '#666',
               }}>
-                {f?.events ? `✅ ${f.events.length} adım` : (f?.isPrimary ? 'Kayıt Bekliyor' : 'Sentez Bekliyor')}
+                {f?.events ? `${f.events.length} adım` : (f?.isPrimary ? 'Kayıt Bekliyor' : 'Sentez Bekliyor')}
               </span>
             </div>
             <div style={{ fontSize: '11px', color: '#8a8fa8', lineHeight: '1.5' }}>{f?.desc}</div>
@@ -1266,7 +1780,7 @@ function TasksView({ tasks, setTasks, activeTask, setActiveTask, taskText, setTa
             ) : hasKnowledgeGaps ? (
               <>
                 <div style={{ fontSize: '11px', fontWeight: '700', color: '#f5a623', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px', marginLeft: '2px' }}>
-                  📚 Bilgi Bankası — Eksiği Öğret
+                  Bilgi Bankası — Eksiği Öğret
                 </div>
                 {activeTask.knowledgeGaps.map((gap) => (
                   <div key={gap.id} style={{
@@ -1277,7 +1791,7 @@ function TasksView({ tasks, setTasks, activeTask, setActiveTask, taskText, setTa
                   }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
                       <span style={{ fontWeight: '600', fontSize: '13px', color: gap.learnedEvents ? '#4facfe' : '#f5a623' }}>
-                        {gap.learnedEvents ? '✅' : '❓'} {gap.label}
+                        {gap.learnedEvents ? '' : ''} {gap.label}
                         {gap.mandatory && <span style={{ fontSize: '10px', color: '#ff6b6b', marginLeft: '6px' }}>• Zorunlu</span>}
                       </span>
                       {!gap.learnedEvents ? (
@@ -1294,7 +1808,7 @@ function TasksView({ tasks, setTasks, activeTask, setActiveTask, taskText, setTa
                     </div>
                     <div style={{ fontSize: '11px', color: '#8a8fa8' }}>{gap.whyNeeded}</div>
                     {gap.learnedEvents && (
-                      <div style={{ fontSize: '11px', color: '#4facfe' }}>✅ {gap.learnedEvents.length} adım öğrenildi</div>
+                      <div style={{ fontSize: '11px', color: '#4facfe' }}>{gap.learnedEvents.length} adım öğrenildi</div>
                     )}
                   </div>
                 ))}
@@ -1309,7 +1823,7 @@ function TasksView({ tasks, setTasks, activeTask, setActiveTask, taskText, setTa
         <div style={{ position: 'absolute', inset: 0, background: 'rgba(10,12,18,0.97)', zIndex: 50, display: 'flex', flexDirection: 'column', padding: '16px', gap: '8px', overflowY: 'auto' }}>
           <div style={{ fontSize: '13px', fontWeight: '700', color: '#e8eaf0', marginBottom: '2px' }}>
             {teachingGapId
-              ? `📚 Öğret: ${activeTask.knowledgeGaps?.find(g => g.id === teachingGapId)?.label || '?'}`
+              ? `Öğret: ${activeTask.knowledgeGaps?.find(g => g.id === teachingGapId)?.label || '?'}`
               : '🗻 Birincil Akışı Seç'}
           </div>
           <div style={{ fontSize: '11px', color: '#a0a5b0', marginBottom: '8px' }}>
@@ -1328,7 +1842,7 @@ function TasksView({ tasks, setTasks, activeTask, setActiveTask, taskText, setTa
             >
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <span style={{ fontSize: '13px', fontWeight: '600', color: selectedFlowIdx === i ? '#4facfe' : '#e8eaf0' }}>
-                  {selectedFlowIdx === i ? '✅ ' : ''}{f.name || `Akış ${i + 1}`}
+                  {selectedFlowIdx === i ? '' : ''}{f.name || `Akış ${i + 1}`}
                 </span>
                 <span style={{ fontSize: '11px', color: '#a0a5b0' }}>{f.events?.length || 0} adım</span>
               </div>
@@ -1342,7 +1856,7 @@ function TasksView({ tasks, setTasks, activeTask, setActiveTask, taskText, setTa
             </button>
             <button onClick={confirmSynthesis} disabled={selectedFlowIdx === null}
               style={{ flex: 2, padding: '10px', borderRadius: '8px', border: 'none', background: 'linear-gradient(135deg,#4facfe,#2a7fdb)', color: '#fff', fontWeight: '700', fontSize: '13px', cursor: 'pointer' }}>
-              {teachingGapId ? '📚 Öğrendir' : '✅ Seç & Analiz Et'}
+              {teachingGapId ? 'Öğrendir' : 'Seç & Analiz Et'}
             </button>
           </div>
         </div>
@@ -1370,14 +1884,14 @@ function TasksView({ tasks, setTasks, activeTask, setActiveTask, taskText, setTa
               border: `1px solid ${(mandatoryGapsFilled && !allFlowsReady && !actionLoading) ? '#2a5298' : '#2a2d3a'}`,
               color: (mandatoryGapsFilled && !allFlowsReady && !actionLoading) ? '#4facfe' : '#555',
             }}>
-            {actionLoading === 'synthesize' ? '⏳ Sentezleniyor...' : allFlowsReady ? '✅ Sentezlendi' : '🧬 Alt Akışları Sentezle'}
+            {actionLoading === 'synthesize' ? '⏳ Sentezleniyor...' : allFlowsReady ? 'Sentezlendi' : 'Alt Akışları Sentezle'}
           </button>
         )}
 
         {/* Post-run disabled Sentezle placeholder */}
         {alreadyRan && (
           <button disabled style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #2a2d3a', background: 'rgba(255,255,255,0.02)', color: '#444', fontWeight: '600', fontSize: '13px', cursor: 'not-allowed' }}>
-            🧬 Alt Akışları Sentezle
+            Alt Akışları Sentezle
           </button>
         )}
 
@@ -1396,10 +1910,396 @@ function TasksView({ tasks, setTasks, activeTask, setActiveTask, taskText, setTa
         {alreadyRan && (
           <button onClick={openTaskReport}
             style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #2a5298', background: 'rgba(79,172,254,0.08)', color: '#4facfe', fontWeight: '600', fontSize: '13px', cursor: 'pointer' }}>
-            📄 Görev Raporu Gör
+            <span style={{display:'flex', alignItems:'center', gap:'6px'}}><FileText size={14}/> Görev Raporu Gör</span>
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+//  KNOWLEDGE TREE VIEW — Bilgi Havuzu Görüntüleyicisi
+// ══════════════════════════════════════════════════════════════
+
+function TreeNode({ node, depth = 0, searchQuery = '', selectedNodeId, onSelectNode }) {
+  const [expanded, setExpanded] = useState(depth < 2); // Auto-expand first 2 levels
+  const hasChildren = node.children && node.children.length > 0;
+  const isSelected = selectedNodeId === node.id;
+
+  // Check if this node or any descendant matches the search
+  const matchesSearch = searchQuery && node.label?.toLowerCase().includes(searchQuery.toLowerCase());
+  const hasMatchingDescendant = searchQuery && hasChildren && nodeTreeMatchesSearch(node, searchQuery);
+
+  // Auto-expand nodes that have matching descendants
+  useEffect(() => {
+    if (hasMatchingDescendant && !expanded) {
+      setExpanded(true);
+    }
+  }, [searchQuery, hasMatchingDescendant]);
+
+  // If searching and this node doesn't match and has no matching descendants, hide it
+  if (searchQuery && !matchesSearch && !hasMatchingDescendant) {
+    return null;
+  }
+
+  const handleClick = () => {
+    if (hasChildren) {
+      setExpanded(!expanded);
+    }
+    onSelectNode(isSelected ? null : node.id);
+  };
+
+  // Highlight search matches in label
+  const renderLabel = () => {
+    if (!searchQuery || !matchesSearch) return node.label;
+    const idx = node.label.toLowerCase().indexOf(searchQuery.toLowerCase());
+    if (idx === -1) return node.label;
+    return (
+      <>
+        {node.label.slice(0, idx)}
+        <span className="search-highlight">{node.label.slice(idx, idx + searchQuery.length)}</span>
+        {node.label.slice(idx + searchQuery.length)}
+      </>
+    );
+  };
+
+  const formatRelativeTime = (ts) => {
+    if (!ts) return '';
+    const diff = Date.now() - ts;
+    if (diff < 60000) return 'az önce';
+    if (diff < 3600000) return `${Math.floor(diff / 60000)}dk önce`;
+    if (diff < 86400000) return `${Math.floor(diff / 3600000)}sa önce`;
+    return `${Math.floor(diff / 86400000)}g önce`;
+  };
+
+  return (
+    <div className="tree-node">
+      <div
+        className={`tree-node-header ${isSelected ? 'active' : ''}`}
+        onClick={handleClick}
+      >
+        <span className={`tree-node-toggle ${hasChildren ? (expanded ? 'expanded' : '') : 'leaf'}`}>
+          ▶
+        </span>
+        <span className="tree-node-icon">{node.icon}</span>
+        <span className={`tree-node-label ${node.type}`} title={node.label}>
+          {renderLabel()}
+        </span>
+
+        {/* Type badge for interactions */}
+        {(node.type === 'click' || node.type === 'input' || node.type === 'change' || node.type === 'submit' || node.type === 'navigation') && (
+          <span className={`tree-node-type-badge ${node.type}`}>{node.typeLabel}</span>
+        )}
+
+        {/* Count badge */}
+        {node.count > 1 && (
+          <span className="tree-node-badge highlight">{node.count}×</span>
+        )}
+
+        {/* Page visit count */}
+        {node.type === 'page' && node.visitCount > 1 && (
+          <span className="tree-node-badge">{node.visitCount} ziyaret</span>
+        )}
+
+        {/* Domain page count */}
+        {node.type === 'domain' && (
+          <span className="tree-node-badge highlight">{node.pageCount} sayfa</span>
+        )}
+
+        {/* Page interaction count */}
+        {node.type === 'page' && node.interactionCount > 0 && (
+          <span className="tree-node-badge">{node.interactionCount} etkileşim</span>
+        )}
+      </div>
+
+      {/* Detail popover when selected */}
+      {isSelected && (node.type === 'page' || node.type === 'click' || node.type === 'input' || node.type === 'change' || node.type === 'submit') && (
+        <div className="tree-node-detail">
+          {node.url && (
+            <div className="tree-node-detail-row">
+              <span className="tree-node-detail-key">URL</span>
+              <span className="tree-node-detail-value">{node.url}</span>
+            </div>
+          )}
+          {node.locator && node.locator.id && (
+            <div className="tree-node-detail-row">
+              <span className="tree-node-detail-key">ID</span>
+              <span className="tree-node-detail-value">#{node.locator.id}</span>
+            </div>
+          )}
+          {node.locator && node.locator.testId && (
+            <div className="tree-node-detail-row">
+              <span className="tree-node-detail-key">Test ID</span>
+              <span className="tree-node-detail-value">{node.locator.testId}</span>
+            </div>
+          )}
+          {node.locator && node.locator.role && (
+            <div className="tree-node-detail-row">
+              <span className="tree-node-detail-key">Rol</span>
+              <span className="tree-node-detail-value">{node.locator.role}</span>
+            </div>
+          )}
+          {node.locator && node.locator.tagName && (
+            <div className="tree-node-detail-row">
+              <span className="tree-node-detail-key">Element</span>
+              <span className="tree-node-detail-value">&lt;{node.locator.tagName}&gt;</span>
+            </div>
+          )}
+          {node.firstSeen && (
+            <div className="tree-node-detail-row">
+              <span className="tree-node-detail-key">İlk Görülme</span>
+              <span className="tree-node-detail-value">{new Date(node.firstSeen).toLocaleString('tr-TR')}</span>
+            </div>
+          )}
+          {node.lastSeen && (
+            <div className="tree-node-detail-row">
+              <span className="tree-node-detail-key">Son Görülme</span>
+              <span className="tree-node-detail-value">{formatRelativeTime(node.lastSeen)}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Children */}
+      {hasChildren && (
+        <div className={`tree-node-children ${expanded ? 'expanded' : 'collapsed'}`}
+          style={{ maxHeight: expanded ? `${node.children.length * 200}px` : '0px' }}
+        >
+          {node.children.map((child) => (
+            <TreeNode
+              key={child.id}
+              node={child}
+              depth={depth + 1}
+              searchQuery={searchQuery}
+              selectedNodeId={selectedNodeId}
+              onSelectNode={onSelectNode}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function nodeTreeMatchesSearch(node, query) {
+  const q = query.toLowerCase();
+  if (node.label?.toLowerCase().includes(q)) return true;
+  if (node.children) {
+    return node.children.some(child => nodeTreeMatchesSearch(child, q));
+  }
+  return false;
+}
+
+// ── Graph View (D3) ─────────────────────────────────────────
+
+function KnowledgeGraphView({ treeData }) {
+  const d3Data = useMemo(() => {
+    function mapNode(node) {
+      return {
+        name: node.label,
+        attributes: {
+          type: node.type,
+          icon: node.icon,
+          count: node.count,
+        },
+        children: node.children && node.children.length > 0 ? node.children.map(mapNode) : undefined,
+      };
+    }
+    if (!treeData || !treeData.children) return null;
+    return {
+      name: 'Testocan Hafızası',
+      attributes: { type: 'root', icon: '🧠' },
+      children: treeData.children.map(mapNode),
+    };
+  }, [treeData]);
+
+  if (!d3Data) return null;
+
+  return (
+    <div style={{ width: '100%', height: 'calc(100vh - 160px)', background: 'var(--bg-primary)' }}>
+      <Tree 
+        data={d3Data} 
+        orientation="horizontal"
+        pathFunc="step"
+        translate={{ x: 40, y: 200 }}
+        nodeSize={{ x: 250, y: 60 }}
+        renderCustomNodeElement={({ nodeDatum, toggleNode }) => (
+          <g onClick={toggleNode} style={{ cursor: 'pointer' }}>
+            <foreignObject x="-15" y="-15" width="250" height="50" style={{ overflow: 'visible' }}>
+              <div style={{ 
+                display: 'flex', alignItems: 'center', background: 'var(--bg-elevated)', 
+                border: nodeDatum.attributes?.type === 'root' ? '1px solid var(--accent)' : '1px solid var(--border)', 
+                borderRadius: '20px', padding: '6px 12px', width: 'max-content',
+                boxShadow: '0 4px 6px rgba(0,0,0,0.3)', color: 'var(--text-primary)',
+                transition: 'transform 0.1s ease',
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
+              onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+              >
+                <span style={{ marginRight: '8px', fontSize: '14px' }}>{nodeDatum.attributes?.icon || '🌳'}</span>
+                <span style={{ fontSize: '13px', fontWeight: '500' }}>
+                  {nodeDatum.name.length > 30 ? nodeDatum.name.slice(0, 30) + '…' : nodeDatum.name}
+                </span>
+                {nodeDatum.attributes?.count > 1 && (
+                  <span style={{ marginLeft: '8px', background: 'var(--accent)', color: '#000', borderRadius: '10px', padding: '0 6px', fontSize: '11px', fontWeight: 'bold' }}>
+                    {nodeDatum.attributes.count}×
+                  </span>
+                )}
+                {nodeDatum.children && nodeDatum.children.length > 0 && (
+                  <span style={{ marginLeft: '8px', fontSize: '10px', opacity: 0.5 }}>
+                    ({nodeDatum.children.length})
+                  </span>
+                )}
+              </div>
+            </foreignObject>
+          </g>
+        )}
+      />
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────
+
+function KnowledgeTreeView() {
+  const [treeData, setTreeData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const [isGraphView, setIsGraphView] = useState(false);
+
+  const loadTree = useCallback(() => {
+    setLoading(true);
+    sendMsg(MSG.GET_KNOWLEDGE_TREE).then((res) => {
+      if (res?.ok) {
+        setTreeData(res.tree);
+      }
+      setLoading(false);
+    });
+  }, []);
+
+  useEffect(() => {
+    loadTree();
+  }, [loadTree]);
+
+  const handleClearKnowledge = () => {
+    if (window.confirm('Tüm bilgi havuzu silinecek. Emin misiniz?')) {
+      sendMsg(MSG.CLEAR_KNOWLEDGE).then(() => {
+        setTreeData({ children: [], stats: { pages: 0, interactions: 0, totalVisits: 0 } });
+      });
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="knowledge-view">
+        <div className="knowledge-empty">
+          <div style={{ fontSize: '24px', animation: 'pulse 1s ease-in-out infinite' }}>🌳</div>
+          <div className="knowledge-empty-desc">Bilgi havuzu yükleniyor…</div>
+        </div>
+      </div>
+    );
+  }
+
+  const stats = treeData?.stats || { pages: 0, interactions: 0, totalVisits: 0 };
+  const isEmpty = !treeData?.children || treeData.children.length === 0;
+
+  return (
+    <div className="knowledge-view">
+      {/* Stats Bar (Compact) */}
+      <div className="knowledge-stats-compact">
+        <div className="knowledge-stat-badge">
+          <span className="stat-val">{treeData.children.length}</span> Site
+        </div>
+        <div className="knowledge-stat-badge">
+          <span className="stat-val">{stats.pages}</span> Sayfa
+        </div>
+        <div className="knowledge-stat-badge">
+          <span className="stat-val">{stats.interactions}</span> Etkileşim
+        </div>
+        <div className="knowledge-stat-badge">
+          <span className="stat-val">{stats.totalVisits}</span> Ziyaret
+        </div>
+      </div>
+
+      {/* Domain Cards */}
+      {!isEmpty && !isGraphView && (
+        <div className="domain-cards-container">
+          <div className="domain-cards-title">Kaydedilen Siteler</div>
+          <div className="domain-cards-scroll">
+            {treeData.children.map(domain => (
+              <div className={`domain-card ${selectedNodeId === domain.id ? 'active' : ''}`} key={domain.id} onClick={() => setSelectedNodeId(domain.id)}>
+                <div className="domain-card-icon">{domain.icon || <Globe size={14}/>}</div>
+                <div className="domain-card-info">
+                  <div className="domain-card-name">{domain.label}</div>
+                  <div className="domain-card-stats">{domain.count || 0} Etkileşim</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Search & Actions */}
+      {!isEmpty && (
+        <div className="knowledge-toolbar">
+          {!isGraphView ? (
+            <div className="knowledge-search-wrapper">
+              <span className="knowledge-search-icon">🔍</span>
+              <input
+                className="knowledge-search"
+                placeholder="Sayfa veya element ara…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+            </div>
+          ) : (
+            <div style={{ flex: 1, fontSize: '12px', color: 'var(--text-tertiary)' }}>
+              Ağaçta gezinmek için sürükleyin, tekerlek ile yakınlaştırın. Düğümlere tıklayarak açıp kapatabilirsiniz.
+            </div>
+          )}
+          
+          <button className="knowledge-clear-btn" onClick={() => setIsGraphView(!isGraphView)} title="Görünümü Değiştir" style={{ color: isGraphView ? 'var(--accent-light)' : 'inherit', borderColor: isGraphView ? 'var(--accent)' : 'var(--border)' }}>
+            {isGraphView ? '📃 Liste' : '🕸️ Görsel Ağaç'}
+          </button>
+          <button className="knowledge-clear-btn" onClick={() => chrome.tabs.create({ url: chrome.runtime.getURL('popup.html') })} title="<span style={{display:'flex', alignItems:'center', gap:'6px'}}><FileText size={14}/> Yeni Sekmede Aç</span>">
+            ↗️ Yeni Sekme
+          </button>
+          <button className="knowledge-clear-btn" onClick={loadTree} title="Yenile" style={{ color: 'var(--accent-light)', borderColor: 'rgba(245,166,35,0.2)' }}>
+            🔄
+          </button>
+        </div>
+      )}
+
+      {/* Tree or Empty State */}
+      {isEmpty ? (
+        <div className="knowledge-empty">
+          <div className="knowledge-empty-icon">🌳</div>
+          <div className="knowledge-empty-title">Bilgi Havuzu Boş</div>
+          <div className="knowledge-empty-desc">
+            Kayıt yaptıkça Testocan siteyi otomatik öğrenir. Butonlar, inputlar, sayfalar — her etkileşim bu ağaçta görünecek.
+          </div>
+          <div className="knowledge-empty-hint">
+            ● İlk kaydınızı başlatın
+          </div>
+        </div>
+      ) : isGraphView ? (
+        <KnowledgeGraphView treeData={treeData} />
+      ) : (
+        <div className="knowledge-tree-container">
+          {treeData.children.map((domainNode) => (
+            <TreeNode
+              key={domainNode.id}
+              node={domainNode}
+              depth={0}
+              searchQuery={searchQuery}
+              selectedNodeId={selectedNodeId}
+              onSelectNode={setSelectedNodeId}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

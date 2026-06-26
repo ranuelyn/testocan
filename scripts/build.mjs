@@ -31,7 +31,7 @@ const manifest = JSON.parse(readFileSync(resolve(ROOT, 'manifest.json'), 'utf-8'
 manifest.background.service_worker = 'background/index.js';
 manifest.content_scripts[0].js = ['content/index.js'];
 manifest.web_accessible_resources[0].resources = ['content/injected.js', 'content/replay.js'];
-manifest.action.default_popup = 'popup.html';
+// Side panel path is already correct (sidepanel.html at root)
 
 writeFileSync(resolve(DIST, 'manifest.json'), JSON.stringify(manifest, null, 2));
 

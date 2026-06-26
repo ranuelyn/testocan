@@ -201,6 +201,11 @@
     if (!e.isTrusted) return; // Ignore programmatic change from JS plugins
     const el = e.target;
     if (!isInputLike(el)) return;
+    // Text inputs are handled by 'input' event. Only handle change for discrete inputs
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'textarea' || (tag === 'input' && !['checkbox', 'radio', 'file', 'color'].includes(el.type))) {
+      return; 
+    }
     sendEvent('change', el, { value: el.value });
   }
 
@@ -279,7 +284,87 @@
       sendResponse({ ok: true });
       return;
     }
+
+    if (type === MSG.SHOW_FLOATING_WIDGET) {
+      const position = message.payload?.position || 'bottom-right';
+      showFloatingWidget(position);
+      sendResponse({ ok: true });
+      return;
+    }
   });
+
+  // ── Floating Widget ──────────────────────────────────────────
+  function showFloatingWidget(position) {
+    // If it already exists, remove it first
+    let existing = document.getElementById('testocan-floating-widget');
+    if (existing) existing.remove();
+
+    const widget = document.createElement('div');
+    widget.id = 'testocan-floating-widget';
+    
+    // Style the widget
+    Object.assign(widget.style, {
+      position: 'fixed',
+      width: '64px',
+      height: '64px',
+      zIndex: '2147483647', // Max z-index
+      cursor: 'pointer',
+      backgroundImage: `url(${chrome.runtime.getURL('icons/icon-48.png')})`,
+      backgroundSize: 'cover',
+      backgroundPosition: 'center',
+      backgroundRepeat: 'no-repeat',
+      borderRadius: '50%',
+      filter: 'drop-shadow(0 8px 16px rgba(245, 166, 35, 0.4))',
+      transition: 'transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)',
+      animation: 'testocanFloatGently 3s ease-in-out infinite'
+    });
+
+    // Apply positioning
+    if (position === 'bottom-right') {
+      widget.style.bottom = '24px';
+      widget.style.right = '24px';
+    } else if (position === 'bottom-left') {
+      widget.style.bottom = '24px';
+      widget.style.left = '24px';
+    } else if (position === 'top-right') {
+      widget.style.top = '24px';
+      widget.style.right = '24px';
+    } else if (position === 'top-left') {
+      widget.style.top = '24px';
+      widget.style.left = '24px';
+    }
+
+    // Hover effect
+    widget.addEventListener('mouseenter', () => {
+      widget.style.transform = 'scale(1.15) rotate(5deg)';
+    });
+    widget.addEventListener('mouseleave', () => {
+      widget.style.transform = 'scale(1) rotate(0deg)';
+    });
+
+    // Click handler
+    widget.addEventListener('click', () => {
+      // Tell background to open side panel
+      chrome.runtime.sendMessage({ type: MSG.OPEN_SIDE_PANEL }).catch(() => {});
+      // Remove widget
+      widget.remove();
+    });
+
+    // Add keyframes for animation if not exists
+    if (!document.getElementById('testocan-animations')) {
+      const style = document.createElement('style');
+      style.id = 'testocan-animations';
+      style.textContent = `
+        @keyframes testocanFloatGently {
+          0%, 100% { transform: translateY(0); }
+          50% { transform: translateY(-8px); }
+        }
+      `;
+      document.head.appendChild(style);
+    }
+
+    document.body.appendChild(widget);
+  }
 
   // ═══════════════════════════════════════════════════════════
   //  AUTO-ACTIVATE: On load, ask Background if recording is

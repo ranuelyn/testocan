@@ -108,26 +108,26 @@ class GeminiClient {
       return { ok: true, modifiedEvents: events, changes: [], message: 'No events to modify.' };
     }
 
-    const systemInstruction = `You are Testocan, an AI test automation agent. You analyze recorded test flows and modify, duplicate, or re-arrange steps based on user instructions.
-The user might ask to repeat a sequence of actions with different values (e.g. searching for A, then searching for B).
+    const systemInstruction = `You are Testocan, an AI test automation agent. You analyze recorded test flows and modify them based on user instructions.
+The user might ask you to run the same test with a different email, password, or other values.
 
 IMPORTANT: You MUST respond with ONLY a valid JSON object.
 
 The response format MUST be exactly:
 {
   "newFlow": [
-    { "sourceIndex": <number>, "newValue": "<optional_new_value>" }
+    { "sourceIndex": 0 },
+    { "sourceIndex": 1, "newValue": "new_email@test.com" }
   ],
-  "message": "<optional explanation>"
+  "message": "I updated the email as requested."
 }
 
 Rules:
 1. "newFlow" is an array that represents the final timeline sequence of events.
 2. Every item must have a "sourceIndex" pointing to the original event index.
-3. To unroll a loop or repeat actions, just output the sourceIndex of those actions multiple times in sequence! (e.g., [1, 2, 3, 1, 2, 3]).
-4. You can provide "newValue" ONLY for 'input' or 'change' actions to overwrite their value.
-5. You MUST include ALL steps from the original flow that shouldn't be deleted, meaning your newFlow array should generally start with index 0, 1, 2... and append loops.
-6. If the prompt doesn't map well, return the original sequence.`;
+3. You MUST include ALL steps from the original flow! If the user just wants to change a login email, you must output ALL original steps in order, but add "newValue" to the 'input' or 'change' step where the email is typed.
+4. "newValue" ONLY applies to 'input' or 'change' actions to overwrite their typed value.
+5. If the user instruction is irrelevant, return the original sequence.`;
 
     const userPrompt = `Here is the recorded test flow timeline:
 ${JSON.stringify(simplifiedEvents, null, 2)}
@@ -257,7 +257,17 @@ Sana ham bir hata raporu (Markdown) verilecek. Bunu aşağıdaki kurallara uyara
   /**
    * Splits a raw task description into a structured Task object with sub-flows.
    */
-  static async splitTask(prompt) {
+  static async splitTask(prompt, availableFlows = []) {
+    let flowsContext = '';
+    if (availableFlows.length > 0) {
+      flowsContext = `
+Ayrıca Bilgi Bankasında (Knowledge Base) daha önceden kaydedilmiş şu akışlar (flows) mevcut:
+${JSON.stringify(availableFlows, null, 2)}
+
+Eğer belirlediğin YALNIZCA BİR TANE OLAN ANA AKIŞ (isPrimary: true olan akış), bu bilgi bankasındaki akışlardan biriyle (ismi veya açıklaması itibarıyla) doğrudan eşleşiyorsa, o ana akışın JSON nesnesine "matchedPrimaryFlowId" adlı bir alan ekle ve değerini bilgi bankasındaki eşleşen akışın "id"si yap.
+`;
+    }
+
     const systemInstruction = `Sen Testocan'sın, uzman bir AI test orkestratörüsün. Kullanıcının verdiği genel "Görevi (Task)" analiz et ve test edilmesi gereken senaryoları (flows) parçalara ayır.
     
 ÇIKTI FORMU KESİNLİKLE AŞAĞIDAKİ GİBİ BİR JSON OLMALIDIR:
@@ -269,13 +279,13 @@ Sana ham bir hata raporu (Markdown) verilecek. Bunu aşağıdaki kurallara uyara
       "id": "benzersiz-bir-id",
       "name": "Alt senaryo adı (Örn: YUSUFTEST ile Geçersiz Karakter Testi)",
       "desc": "Bu akışta tam olarak ne test edilecek detaylı açıklama",
-      "isPrimary": boolean // YALNIZCA BİR TANESİ TRUE OLMALIDIR. (Gereken tüm tuş basma/sayfa gezme çeşitliliğine sahip, kullanıcının ilk başta elle kaydetmesi gereken ana akış)
+      "isPrimary": boolean, // YALNIZCA BİR TANESİ TRUE OLMALIDIR.
+      "matchedPrimaryFlowId": "eğer-eşleşme-varsa-id" // Opsiyonel: Sadece isPrimary: true ise ve bilgi bankasındaki bir akışla eşleşiyorsa ekle.
     }
   ]
 }
 
-Önemli kural: 'isPrimary: true' olan akış, testin kalbini oluşturan, kullanıcının en çok etkileşime gireceği akış olmalıdır. Diğer akışlar bu ana akış baz alınarak (farklı veri girilerek) kopyalanıp (synthesized) yapılacaktır.
-`;
+Önemli kural: 'isPrimary: true' olan akış, testin kalbini oluşturan, kullanıcının en çok etkileşime gireceği akış olmalıdır. Diğer akışlar bu ana akış baz alınarak kopyalanıp yapılacaktır.${flowsContext}`;
 
     const result = await GeminiClient.generate(prompt, systemInstruction, true);
     if (!result.ok) return result;

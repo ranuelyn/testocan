@@ -9,7 +9,7 @@
 class BugReport {
   static generate({ flow, errors = {}, assertionResults = [], screenshot = null, prompt = null }) {
     const failedAssertions = assertionResults.filter((a) => !a.passed);
-    const networkErrors = errors.networkErrors || [];
+    const networkErrors = errors.networkErrors || (errors.requests ? errors.requests.filter(r => r.isError) : []);
     const consoleErrors = errors.consoleErrors || [];
     const jsErrors = errors.jsErrors || [];
 
@@ -71,7 +71,16 @@ class BugReport {
 
       if (networkErrors.length > 0) {
         lines.push('\n### 🌐 Ağ Hataları');
-        for (const err of networkErrors.slice(0, 8)) {
+        
+        // Deduplicate network errors by method, URL, and status
+        const uniqueErrors = new Map();
+        for (const err of networkErrors) {
+          const path = BugReport.shortenUrl(err.url);
+          const key = `${err.method || 'GET'}|${path}|${err.status}`;
+          if (!uniqueErrors.has(key)) uniqueErrors.set(key, err);
+        }
+
+        for (const err of Array.from(uniqueErrors.values()).slice(0, 8)) {
           const path = BugReport.shortenUrl(err.url);
           const body = err.responseBody ? err.responseBody.slice(0, 150) : '';
           lines.push(`- **${err.method || 'GET'} \`${path}\`** → HTTP **${err.status}** ${err.statusText || ''}`);
@@ -158,27 +167,36 @@ class BugReport {
       const rawLabel = (loc.placeholder || loc.name || loc.ariaLabel || loc.id || loc.innerText?.slice(0, 40) || loc.tagName || '?').trim();
       const isPasswordField = PASSWORD_FIELDS.some(p => rawLabel.toLowerCase().includes(p) || loc.type === 'password');
 
+      let stepString = null;
       switch (event.action) {
         case 'navigation':
-          steps.push(`Sayfaya gidildi: ${event.url || ''}`);
+          stepString = `Sayfaya gidildi: ${event.url || ''}`;
           break;
         case 'click':
-          steps.push(`"${rawLabel}" butonuna / bağlantısına tıklandı`);
+          stepString = `"${rawLabel}" butonuna / bağlantısına tıklandı`;
           break;
         case 'input':
         case 'change':
           if (isPasswordField) {
-            steps.push(`"${rawLabel}" alanına şifre girildi [ŞİFRE GİRİLDİ]`);
+            stepString = `"${rawLabel}" alanına şifre girildi [ŞİFRE GİRİLDİ]`;
           } else {
-            steps.push(`"${rawLabel}" alanına "${event.value || ''}" yazıldı`);
+            stepString = `"${rawLabel}" alanına "${event.value || ''}" yazıldı`;
           }
           break;
         case 'keydown':
-          if (event.key && event.key !== 'Tab') steps.push(`"${event.key}" tuşuna basıldı`);
+          if (event.key && event.key !== 'Tab') stepString = `"${event.key}" tuşuna basıldı`;
           break;
         case 'submit':
-          steps.push('Form gönderildi');
+          stepString = 'Form gönderildi';
           break;
+      }
+
+      if (stepString) {
+        // Prevent repeating the same exact step if it occurred in the last 3 steps
+        const recentSteps = steps.slice(-3);
+        if (!recentSteps.includes(stepString)) {
+          steps.push(stepString);
+        }
       }
     }
 

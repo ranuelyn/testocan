@@ -360,7 +360,8 @@
 
     let el;
     try {
-      el = await waitForElement(locator, 8000);
+      // Wait up to 15 seconds for elements, giving SPAs time to render after page load
+      el = await waitForElement(locator, 15000);
     } catch (err) {
       return {
         success: false,

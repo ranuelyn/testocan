@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Testocan",
-  "version": "0.1.0",
-  "description": "AI-powered QA agent — record, replay, and test user flows with intelligent self-healing locators.",
+  "version": "0.3.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqocDH4wIo+NlMA3yo1pyYNH0aqm6EtHYZFDJCDXXqjri4a2Y/U2Sr7ZNhSfohiBL/XqtMSivTPLKRg1g58/wfJN8whUuci1h8okBQbtEIezuZ3EGjVSjOImppGevHJcVTDpQH3MRDFB5KmGCNay7vB7/Mxw4g9FBy3PYv4sgOgUa7yF+CrojkyeHQt3V2HLJJewj78PE29cwSe1Inf/b7N31bHQWcMVsk9oFj62THPjy5aIAd3hr4E1q3mSvJ3rImW1rx8FkGomWsw/+VUKSV4KxXvSm4mEdX7tv62IoJBRj1B2iZglbsNvNnsqfOdpTjQ0ZD1+w7JzHBMWcTxVucQIDAQAB",
+  "description": "Yapay zeka destekli otonom web kalite güvence asistanınız.",
 
   "permissions": [
     "activeTab",
@@ -10,7 +11,8 @@
     "storage",
     "debugger",
     "tabs",
-    "notifications"
+    "notifications",
+    "sidePanel"
   ],
 
   "host_permissions": [
@@ -31,8 +33,11 @@
     }
   ],
 
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+
   "action": {
-    "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",
       "48": "icons/icon-48.png",
@@ -48,7 +53,7 @@
 
   "web_accessible_resources": [
     {
-      "resources": ["src/content/injected.js"],
+      "resources": ["src/content/injected.js", "icons/*", "assets/*"],
       "matches": ["<all_urls>"]
     }
   ]

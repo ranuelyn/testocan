@@ -11,6 +11,7 @@ export default defineConfig({
       input: {
         popup: resolve(__dirname, 'popup.html'),
         report: resolve(__dirname, 'report.html'),
+        sidepanel: resolve(__dirname, 'sidepanel.html'),
       },
       output: {
         entryFileNames: 'assets/[name].js',

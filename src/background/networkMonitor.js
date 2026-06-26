@@ -104,6 +104,18 @@ class NetworkMonitor {
           console.log(`[Testocan Net] HTTP ${response.status} → ${response.url}`);
           // Try to get response body for error details
           this._captureResponseBody(tabId, requestId, entry);
+          
+          // Capture a screenshot after a short delay to allow UI to render the error
+          setTimeout(() => {
+            chrome.tabs.get(tabId, (tab) => {
+              if (tab && tab.windowId) {
+                chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 70 })
+                  .then(dataUrl => {
+                    entry.errorScreenshot = dataUrl;
+                  }).catch(err => console.warn('NetMonitor screenshot failed:', err));
+              }
+            });
+          }, 800);
         }
         break;
       }
